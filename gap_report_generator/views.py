@@ -4,6 +4,7 @@ import pandas as pd
 from django.conf import settings
 from django.shortcuts import render
 from django.core.files.storage import FileSystemStorage
+from django.http import HttpResponse
 
 def gap_report(request):
     download_ready = False
@@ -22,21 +23,24 @@ def gap_report(request):
             # Step 1: Load CSV file
             df = pd.read_csv(file_path)
 
-            # Step 2: Convert 'Time' column to datetime with day-first format
-            df['Time'] = pd.to_datetime(df['Time'], dayfirst=True, errors='coerce')
-            df.dropna(subset=['Time'], inplace=True)
-
-            # ✅ Step 3: Keep only 15-minute interval timestamps
-            df = df[df['Time'].dt.minute % 15 == 0]
-            df.reset_index(drop=True, inplace=True)
-
-            # Step 4: Replace missing indicators
+            # Step 2: Replace missing indicators and format the 'Time' column
             df.replace([' ', '', '-', 'NA', 'N/A'], pd.NA, inplace=True)
+            df['Time'] = pd.to_datetime(df['Time'], dayfirst=True, errors='coerce')
 
-            # Step 5: Format time column for output
-            time_col = df['Time'].dt.strftime('%d/%m/%Y %H:%M:%S').tolist()
+            # Step 3: Drop rows with missing 'Time'
+            df = df.dropna(subset=['Time'])
 
-            # Step 6: Detect missing data and gaps
+            # Step 4: Define the expected 15-minute intervals
+            start_time = df['Time'].min()
+            end_time = df['Time'].max()
+            expected_times = pd.date_range(start=start_time, end=end_time, freq='15min', inclusive='left')
+
+            # Step 5: Filter the DataFrame based on expected times and remove duplicates
+            df = df[df['Time'].isin(expected_times)]
+            df = df[~df.duplicated(subset=['Time'], keep='first') | df.drop(columns=['Time']).notna().any(axis=1)]
+
+            # Step 6: Process missing values and gaps
+            time_col = df['Time'].astype(str).tolist()
             missing_values = {}
             missing_times_lists = {}
 
@@ -71,7 +75,7 @@ def gap_report(request):
 
                 missing_times_lists[col] = times
 
-            # Step 7: Create output DataFrame
+            # Step 7: Prepare output DataFrame
             columns = list(missing_values.keys())
             final_data = []
             final_data.append(['Missing_Values'] + [missing_values[col] for col in columns])
